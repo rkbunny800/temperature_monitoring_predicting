@@ -1,0 +1,111 @@
+#include <ESP8266WiFi.h>
+#include <Wire.h>
+#include <BME280I2C.h>
+
+// Define I2C pins
+#define SDA_PIN D2
+#define SCL_PIN D1
+
+BME280I2C bme;  // Default I2C address is 0x76
+
+// AP credentials
+const char* ssid = "ESP8266_AP";
+const char* password = "12345678";
+
+WiFiServer server(80);
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);  // Give Serial Monitor time to initialize
+
+  // Start I2C
+  Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.setClock(50000);
+
+  // Initialize BMP280 (using BME280I2C library)
+  if (!bme.begin()) {
+    Serial.println("Could not find BMP280 sensor! Check wiring or I2C address");
+    while (1);  // Halt if sensor fails
+  }
+
+  // Set ESP8266 as Access Point
+  WiFi.mode(WIFI_AP);
+  if (WiFi.softAP(ssid, password, 1, 0)) {
+    IPAddress IP = WiFi.softAPIP();
+    Serial.print("AP IP address: ");
+    Serial.println(IP);
+  } else {
+    Serial.println("Failed to create WiFi Access Point!");
+    while (1);  // Halt if WiFi AP fails
+  }
+
+  // Start the server
+  server.begin();
+  Serial.println("Server started");
+}
+
+void loop() {
+  // Read sensor data periodically for debugging
+  static unsigned long lastRead = 0;
+  if (millis() - lastRead >= 5000) {  // Read every 5 seconds
+    float temp(NAN), hum(NAN), pres(NAN);
+    BME280::TempUnit tempUnit(BME280::TempUnit_Celsius);
+    BME280::PresUnit presUnit(BME280::PresUnit_hPa);
+
+    bme.read(pres, temp, hum, tempUnit, presUnit);  // Pass a separate hum variable
+
+    // Calculate altitude (using standard sea level pressure of 1013.25 hPa)
+    float alt = 44330.0 * (1.0 - pow(pres / 1013.25, 0.1903));
+
+    // Print readings to Serial Monitor
+    Serial.println("Sensor Readings:");
+    Serial.print("Temperature: "); Serial.print(temp); Serial.println(" °C");
+    Serial.print("Pressure: "); Serial.print(pres); Serial.println(" hPa");
+    Serial.print("Altitude: "); Serial.print(alt); Serial.println(" m");
+
+    lastRead = millis();
+  }
+
+  // Handle client requests
+  WiFiClient client = server.available();
+  if (!client) {
+    return;
+  }
+
+  // Wait for client to connect
+  while (!client.available()) {
+    delay(1);
+  }
+
+  // Read request (ignore content)
+  String request = client.readStringUntil('\r');
+  Serial.println("Client request: " + request);
+  client.flush();
+
+  // Read sensor data for the client
+  float temp(NAN), hum(NAN), pres(NAN);
+  BME280::TempUnit tempUnit(BME280::TempUnit_Celsius);
+  BME280::PresUnit presUnit(BME280::PresUnit_hPa);
+
+  bme.read(pres, temp, hum, tempUnit, presUnit);  // Pass a separate hum variable
+
+  // Calculate altitude
+  float alt = 44330.0 * (1.0 - pow(pres / 1013.25, 0.1903));
+
+  // HTML response with auto-refresh
+  String html = "<!DOCTYPE html><html><head><title>BMP280 Readings</title>";
+  html += "<meta http-equiv=\"refresh\" content=\"5\">";  // Refresh every 5 seconds
+  html += "</head><body>";
+  html += "<h1>ESP8266 BMP280 Sensor</h1>";
+  html += "<p><b>Temperature:</b> " + String(temp) + " °C</p>";
+  html += "<p><b>Pressure:</b> " + String(pres) + " hPa</p>";
+  html += "<p><b>Altitude:</b> " + String(alt) + " m</p>";
+  html += "</body></html>";
+
+  // Send HTTP response
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-type:text/html");
+  client.println();
+  client.println(html);
+  client.stop();
+}
